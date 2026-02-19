@@ -16,7 +16,6 @@ A production-ready Jira integration backend built with Python and FastAPI.
 - Health check endpoint
 - LLM/tool-friendly endpoint
 - Basic unit tests with mocked Jira calls
-- Docker support
 
 ## Project Structure
 
@@ -27,7 +26,6 @@ A production-ready Jira integration backend built with Python and FastAPI.
 - `requirements.txt`
 - `tests/test_main.py`
 - `tests/test_jira_service.py`
-- `Dockerfile`
 
 ## Requirements
 
@@ -74,11 +72,6 @@ Open:
 - Backend (FastAPI API): `8000`
 - Frontend (UI at `/`): `8000` (served by the same FastAPI app)
 
-If you run in Docker with `-p 8000:8000`, then:
-
-- Host port: `8000`
-- Container port: `8000`
-
 ## API Endpoints
 
 - `GET /`
@@ -122,20 +115,6 @@ If you run in Docker with `-p 8000:8000`, then:
 
 ```bash
 python -m pytest -q
-```
-
-## Docker
-
-Build image:
-
-```bash
-docker build -t jira-integration .
-```
-
-Run container:
-
-```bash
-docker run --env-file .env -p 8000:8000 jira-integration
 ```
 
 ## Notes
