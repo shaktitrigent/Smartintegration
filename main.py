@@ -1,9 +1,9 @@
-﻿import json
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Path
+from fastapi import FastAPI, HTTPException, Path, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from config import get_settings
@@ -18,14 +18,16 @@ from jira_service import (
 from schemas import (
     HealthResponse,
     JiraIssueResponse,
+    JiraLookupResponse,
     JiraToolRequest,
     JiraToolResponse,
     ToolError,
 )
 
 
-ISSUE_KEY_PATTERN = r"^[A-Z][A-Z0-9]+-\d+$"
+TICKET_ID_PATTERN = r"^[A-Z]+-\d+$"
 ATTACHMENT_ID_PATTERN = r"^\d+$"
+NOT_FOUND_TEXT = "Ticket not found. Please verify ID or try keyword search."
 
 
 class JsonFormatter(logging.Formatter):
@@ -88,8 +90,8 @@ def configure_logging() -> logging.Logger:
 logger = configure_logging()
 app = FastAPI(
     title="Jira Integration Service",
-    version="1.1.0",
-    description="FastAPI backend for Jira issue retrieval with structured responses.",
+    version="2.0.0",
+    description="Production-ready FastAPI backend for Jira issue lookup and retrieval.",
 )
 jira_service = JiraService(get_settings())
 
@@ -103,380 +105,449 @@ ROOT_PAGE_HTML = """
   <title>Jira Ticket Viewer</title>
   <style>
     :root {
-      --bg: #f3f5f9;
+      --bg-start: #f9fafb;
+      --bg-end: #e8eef7;
       --card: #ffffff;
-      --text: #1f2937;
-      --muted: #6b7280;
-      --primary: #0f62fe;
-      --primary-hover: #0043ce;
-      --border: #e5e7eb;
-      --error-bg: #fef2f2;
-      --error-text: #b91c1c;
-      --success-bg: #f9fafb;
+      --text: #1d293d;
+      --muted: #637085;
+      --primary: #1b6ef3;
+      --primary-hover: #1255bd;
+      --border: #d6deeb;
+      --error-bg: #fff1f1;
+      --error-text: #b3261e;
+      --surface: #f6f8fc;
     }
-
-    * {
-      box-sizing: border-box;
-    }
-
+    * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      background: linear-gradient(160deg, #f8fafc 0%, #eef2ff 100%);
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: linear-gradient(150deg, var(--bg-start), var(--bg-end));
       color: var(--text);
-      display: grid;
-      place-items: center;
+      display: flex;
+      justify-content: center;
       padding: 24px;
     }
-
-    .card {
+    .wrap {
       width: 100%;
-      max-width: 860px;
+      max-width: 980px;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 16px;
-      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
-      padding: 28px;
+      box-shadow: 0 10px 28px rgba(8, 20, 36, 0.08);
+      padding: 24px;
     }
-
     h1 {
-      margin: 0 0 18px;
-      font-size: 28px;
+      margin: 0;
+      font-size: 30px;
       letter-spacing: 0.2px;
     }
-
-    .subtitle {
-      margin: 0 0 22px;
+    .hint {
+      margin: 10px 0 18px;
       color: var(--muted);
       font-size: 14px;
     }
-
-    .controls {
+    .search-row {
       display: flex;
       gap: 10px;
-      align-items: center;
-      margin-bottom: 18px;
       flex-wrap: wrap;
     }
-
     input[type="text"] {
       flex: 1;
-      min-width: 220px;
-      padding: 12px 14px;
-      font-size: 16px;
+      min-width: 280px;
       border: 1px solid var(--border);
       border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 16px;
       outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
     }
-
     input[type="text"]:focus {
       border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(15, 98, 254, 0.18);
+      box-shadow: 0 0 0 3px rgba(27, 110, 243, 0.18);
     }
-
     button {
-      border: none;
+      border: 0;
       border-radius: 10px;
-      padding: 12px 16px;
       background: var(--primary);
       color: #fff;
-      font-weight: 600;
       font-size: 15px;
+      font-weight: 600;
+      padding: 12px 16px;
       cursor: pointer;
-      transition: background-color 0.2s, transform 0.02s;
     }
-
-    button:hover {
-      background: var(--primary-hover);
-    }
-
-    button:active {
-      transform: translateY(1px);
-    }
-
+    button:hover { background: var(--primary-hover); }
     .message {
-      display: none;
-      margin-bottom: 16px;
+      margin-top: 14px;
       padding: 10px 12px;
       border-radius: 10px;
-      font-size: 14px;
+      border: 1px solid transparent;
+      display: none;
     }
-
+    .message.info {
+      display: block;
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--muted);
+    }
     .message.error {
       display: block;
       background: var(--error-bg);
+      border-color: #ffd5d2;
       color: var(--error-text);
-      border: 1px solid #fecaca;
     }
-
-    .message.info {
-      display: block;
-      background: var(--success-bg);
-      color: var(--muted);
-      border: 1px solid var(--border);
-    }
-
-    .ticket {
+    .matches {
       display: none;
-      border-top: 1px solid var(--border);
-      padding-top: 18px;
-      margin-top: 4px;
-    }
-
-    .ticket.show {
-      display: block;
-    }
-
-    .ticket-title {
-      margin: 0 0 8px;
-      font-size: 26px;
-      line-height: 1.3;
-    }
-
-    .ticket-key {
-      color: var(--muted);
-      margin: 0 0 18px;
-      font-size: 14px;
-    }
-
-    .section-title {
-      margin: 18px 0 8px;
-      font-size: 16px;
-    }
-
-    .description {
-      padding: 12px;
+      margin-top: 16px;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      background: #fcfcfd;
-      line-height: 1.6;
-      font-size: 15px;
-      overflow-x: auto;
+      border-radius: 12px;
+      background: var(--surface);
+      padding: 12px;
     }
-
-    .meta {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 10px 16px;
-      margin-top: 12px;
-    }
-
-    .meta-row {
-      padding: 10px;
+    .matches.show { display: block; }
+    .match-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
       border: 1px solid var(--border);
       border-radius: 10px;
       background: #fff;
-      min-height: 66px;
+      padding: 10px;
+      margin: 8px 0;
     }
-
-    .meta-label {
-      display: block;
-      font-size: 12px;
+    .match-meta {
       color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 6px;
+      font-size: 13px;
+      margin-top: 3px;
     }
-
-    .meta-value {
-      font-size: 15px;
-      word-break: break-word;
+    .ticket {
+      display: none;
+      margin-top: 18px;
+      border-top: 1px solid var(--border);
+      padding-top: 18px;
     }
-
-    .attachments {
-      margin: 8px 0 0;
-      padding-left: 18px;
+    .ticket.show { display: block; }
+    .section {
+      margin-top: 18px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      background: #fff;
     }
-
+    .section h3 {
+      margin: 0 0 10px;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    .kv {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      min-height: 68px;
+    }
+    .kv b {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+    .rich {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      background: var(--surface);
+      line-height: 1.5;
+      overflow-x: auto;
+    }
+    .attachments { margin: 0; padding-left: 0; list-style: none; }
     .attachments li {
-      margin: 6px 0;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+      margin: 8px 0;
+      padding: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
     }
-
-    .attachments a {
-      color: var(--primary);
+    .file-meta {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .download-btn {
       text-decoration: none;
+      background: var(--primary);
+      color: #fff;
+      padding: 7px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
     }
-
-    .attachments a:hover {
-      text-decoration: underline;
+    @media (max-width: 700px) {
+      .wrap { padding: 16px; }
+      h1 { font-size: 24px; }
+      input[type="text"] { min-width: 180px; }
     }
   </style>
 </head>
 <body>
-  <main class="card">
-    <h1>Jira Ticket Viewer</h1>
-    <p class="subtitle">Enter a ticket ID like <strong>SCRUM-1</strong> to fetch issue details.</p>
+  <main class="wrap">
+    <h1>Jira Search Input</h1>
+    <p class="hint">Use a ticket id (example: ABC-123) or enter keywords to search title/description.</p>
 
-    <div class="controls">
-      <input id="issueKeyInput" type="text" placeholder="SCRUM-1" autocomplete="off" />
-      <button id="fetchButton" type="button">Fetch Ticket</button>
+    <div class="search-row">
+      <input id="searchInput" type="text" placeholder="ABC-123 or payment gateway timeout" autocomplete="off" />
+      <button id="searchButton" type="button">Search</button>
     </div>
 
-    <div id="message" class="message" role="alert"></div>
+    <div id="message" class="message info">Enter input to fetch ticket details.</div>
 
-    <section id="ticket" class="ticket" aria-live="polite">
-      <h2 id="ticketSummary" class="ticket-title"></h2>
-      <p id="ticketKey" class="ticket-key"></p>
+    <section id="matchesSection" class="matches">
+      <div id="matchesList"></div>
+    </section>
 
-      <h3 class="section-title">Description</h3>
-      <div id="ticketDescription" class="description"></div>
-
-      <h3 class="section-title">Details</h3>
-      <div class="meta">
-        <div class="meta-row"><span class="meta-label">Status</span><div id="status" class="meta-value">-</div></div>
-        <div class="meta-row"><span class="meta-label">Priority</span><div id="priority" class="meta-value">-</div></div>
-        <div class="meta-row"><span class="meta-label">Issue Type</span><div id="issueType" class="meta-value">-</div></div>
-        <div class="meta-row"><span class="meta-label">Assignee</span><div id="assignee" class="meta-value">-</div></div>
-        <div class="meta-row"><span class="meta-label">Reporter</span><div id="reporter" class="meta-value">-</div></div>
-        <div class="meta-row"><span class="meta-label">Created</span><div id="created" class="meta-value">-</div></div>
-        <div class="meta-row"><span class="meta-label">Updated</span><div id="updated" class="meta-value">-</div></div>
+    <section id="ticketSection" class="ticket" aria-live="polite">
+      <div class="section">
+        <h3>--- BASIC INFO ---</h3>
+        <div class="grid">
+          <div class="kv"><b>Ticket ID</b><span id="ticketId">-</span></div>
+          <div class="kv"><b>Summary</b><span id="summary">-</span></div>
+          <div class="kv"><b>Status</b><span id="status">-</span></div>
+          <div class="kv"><b>Priority</b><span id="priority">-</span></div>
+        </div>
       </div>
 
-      <h3 class="section-title">Attachments</h3>
-      <ul id="attachments" class="attachments"></ul>
+      <div class="section">
+        <h3>--- DESCRIPTION ---</h3>
+        <div id="description" class="rich"></div>
+      </div>
+
+      <div class="section">
+        <h3>--- ACCEPTANCE CRITERIA ---</h3>
+        <div id="acceptanceCriteria" class="rich"></div>
+      </div>
+
+      <div class="section">
+        <h3>--- ATTACHMENTS ---</h3>
+        <ul id="attachments" class="attachments"></ul>
+      </div>
     </section>
   </main>
 
   <script>
-    const input = document.getElementById("issueKeyInput");
-    const button = document.getElementById("fetchButton");
-    const message = document.getElementById("message");
-    const ticketSection = document.getElementById("ticket");
+    const inputEl = document.getElementById("searchInput");
+    const buttonEl = document.getElementById("searchButton");
+    const messageEl = document.getElementById("message");
+    const ticketSectionEl = document.getElementById("ticketSection");
+    const matchesSectionEl = document.getElementById("matchesSection");
+    const matchesListEl = document.getElementById("matchesList");
 
-    const summaryEl = document.getElementById("ticketSummary");
-    const keyEl = document.getElementById("ticketKey");
-    const descriptionEl = document.getElementById("ticketDescription");
-
+    const ticketIdEl = document.getElementById("ticketId");
+    const summaryEl = document.getElementById("summary");
     const statusEl = document.getElementById("status");
     const priorityEl = document.getElementById("priority");
-    const issueTypeEl = document.getElementById("issueType");
-    const assigneeEl = document.getElementById("assignee");
-    const reporterEl = document.getElementById("reporter");
-    const createdEl = document.getElementById("created");
-    const updatedEl = document.getElementById("updated");
+    const descriptionEl = document.getElementById("description");
+    const acceptanceEl = document.getElementById("acceptanceCriteria");
     const attachmentsEl = document.getElementById("attachments");
 
     function safeValue(value) {
-      if (value === null || value === undefined || value === "") {
-        return "-";
-      }
+      if (value === null || value === undefined || value === "") return "-";
       return String(value);
     }
 
     function showMessage(text, type) {
-      message.textContent = text;
-      message.className = "message " + type;
-    }
-
-    function clearMessage() {
-      message.textContent = "";
-      message.className = "message";
+      messageEl.className = "message " + type;
+      messageEl.textContent = text;
     }
 
     function clearTicket() {
-      ticketSection.classList.remove("show");
-      summaryEl.textContent = "";
-      keyEl.textContent = "";
-      descriptionEl.innerHTML = "";
+      ticketSectionEl.classList.remove("show");
+      ticketIdEl.textContent = "-";
+      summaryEl.textContent = "-";
       statusEl.textContent = "-";
       priorityEl.textContent = "-";
-      issueTypeEl.textContent = "-";
-      assigneeEl.textContent = "-";
-      reporterEl.textContent = "-";
-      createdEl.textContent = "-";
-      updatedEl.textContent = "-";
+      descriptionEl.innerHTML = "";
+      acceptanceEl.innerHTML = "";
       attachmentsEl.innerHTML = "";
     }
 
-    function renderTicket(data) {
-      summaryEl.textContent = safeValue(data.summary);
-      keyEl.textContent = safeValue(data.issue_key);
-      descriptionEl.innerHTML = data.description && data.description.trim() ? data.description : "<em>No description provided.</em>";
+    function clearMatches() {
+      matchesSectionEl.classList.remove("show");
+      matchesListEl.innerHTML = "";
+    }
 
-      statusEl.textContent = safeValue(data.status);
-      priorityEl.textContent = safeValue(data.priority);
-      issueTypeEl.textContent = safeValue(data.issue_type);
-      assigneeEl.textContent = safeValue(data.assignee);
-      reporterEl.textContent = safeValue(data.reporter);
-      createdEl.textContent = safeValue(data.created);
-      updatedEl.textContent = safeValue(data.updated);
+    function renderIssue(issue) {
+      clearMatches();
+      ticketIdEl.textContent = safeValue(issue.ticket_id);
+      summaryEl.textContent = safeValue(issue.summary);
+      statusEl.textContent = safeValue(issue.status);
+      priorityEl.textContent = safeValue(issue.priority);
+      descriptionEl.innerHTML = issue.description && issue.description.trim()
+        ? issue.description
+        : "<em>No description available.</em>";
+      acceptanceEl.innerHTML = issue.acceptance_criteria && issue.acceptance_criteria.trim()
+        ? issue.acceptance_criteria
+        : "<em>No acceptance criteria available.</em>";
 
       attachmentsEl.innerHTML = "";
-      const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+      const attachments = Array.isArray(issue.attachments) ? issue.attachments : [];
       if (!attachments.length) {
         const li = document.createElement("li");
-        li.textContent = "No attachments";
+        li.innerHTML = "<div>No attachments.</div>";
         attachmentsEl.appendChild(li);
       } else {
-        attachments.forEach((attachment) => {
+        attachments.forEach((item) => {
           const li = document.createElement("li");
-          const link = document.createElement("a");
-          link.textContent = safeValue(attachment.filename);
-          link.href = attachment.download_url || "#";
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-          if (!attachment.download_url) {
-            link.style.pointerEvents = "none";
-            link.style.opacity = "0.6";
+          const left = document.createElement("div");
+          const name = document.createElement("div");
+          const meta = document.createElement("div");
+          name.textContent = safeValue(item.name);
+          meta.className = "file-meta";
+          meta.textContent = "Type: " + safeValue(item.type) + " | Size: " + safeValue(item.size);
+          left.appendChild(name);
+          left.appendChild(meta);
+
+          const right = document.createElement("div");
+          if (item.download_url) {
+            const link = document.createElement("a");
+            link.className = "download-btn";
+            link.href = item.download_url;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = "Download";
+            right.appendChild(link);
+          } else {
+            right.textContent = "No download URL";
           }
-          li.appendChild(link);
+
+          li.appendChild(left);
+          li.appendChild(right);
           attachmentsEl.appendChild(li);
         });
       }
 
-      ticketSection.classList.add("show");
+      ticketSectionEl.classList.add("show");
     }
 
-    async function fetchTicket() {
-      const issueKey = input.value.trim().toUpperCase();
-      clearMessage();
+    async function fetchByTicketId(ticketId) {
+      const response = await fetch("/jira/" + encodeURIComponent(ticketId));
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = payload && payload.detail ? String(payload.detail) : "Failed to fetch ticket.";
+        throw new Error(detail);
+      }
+      return payload;
+    }
 
-      if (!issueKey) {
-        clearTicket();
-        showMessage("Please enter a ticket ID.", "error");
+    function renderMatches(matches) {
+      clearTicket();
+      matchesListEl.innerHTML = "";
+      matches.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "match-item";
+
+        const left = document.createElement("div");
+        const title = document.createElement("div");
+        title.textContent = safeValue(item.ticket_id) + " | " + safeValue(item.summary);
+        const meta = document.createElement("div");
+        meta.className = "match-meta";
+        meta.textContent = "Status: " + safeValue(item.status) + " | Priority: " + safeValue(item.priority);
+        left.appendChild(title);
+        left.appendChild(meta);
+
+        const selectBtn = document.createElement("button");
+        selectBtn.type = "button";
+        selectBtn.textContent = "Select";
+        selectBtn.addEventListener("click", async () => {
+          selectBtn.disabled = true;
+          selectBtn.textContent = "Loading...";
+          try {
+            const issue = await fetchByTicketId(item.ticket_id);
+            renderIssue(issue);
+            showMessage("Selected ticket loaded.", "info");
+          } catch (error) {
+            showMessage(String(error.message || error), "error");
+          } finally {
+            selectBtn.disabled = false;
+            selectBtn.textContent = "Select";
+          }
+        });
+
+        row.appendChild(left);
+        row.appendChild(selectBtn);
+        matchesListEl.appendChild(row);
+      });
+
+      matchesSectionEl.classList.add("show");
+    }
+
+    async function runLookup() {
+      const rawInput = inputEl.value || "";
+      const q = rawInput.trim();
+      clearMatches();
+      clearTicket();
+
+      if (!q) {
+        showMessage("Please enter ticket ID or search text.", "error");
         return;
       }
 
-      button.disabled = true;
-      button.textContent = "Fetching...";
+      buttonEl.disabled = true;
+      buttonEl.textContent = "Searching...";
+      showMessage("Fetching ticket data...", "info");
 
       try {
-        const response = await fetch("/jira/" + encodeURIComponent(issueKey));
+        const url = "/jira/lookup?input=" + encodeURIComponent(q);
+        const response = await fetch(url);
         const payload = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-          clearTicket();
-          if (response.status === 404) {
-            showMessage("Ticket not found. Please check the issue key and try again.", "error");
-          } else if (response.status === 422) {
-            showMessage("Invalid ticket format. Use something like SCRUM-1.", "error");
-          } else {
-            const detail = payload && payload.detail ? String(payload.detail) : "Failed to fetch ticket.";
-            showMessage(detail, "error");
-          }
+          const detail = payload && payload.detail ? String(payload.detail) : "Failed to fetch ticket.";
+          showMessage(detail, "error");
           return;
         }
 
-        renderTicket(payload);
+        if (payload.mode === "single" && payload.data) {
+          renderIssue(payload.data);
+          showMessage("Ticket loaded.", "info");
+          return;
+        }
+
+        if (payload.mode === "multiple") {
+          const matches = Array.isArray(payload.matches) ? payload.matches : [];
+          if (!matches.length) {
+            showMessage("Ticket not found. Please verify ID or try keyword search.", "error");
+            return;
+          }
+          renderMatches(matches);
+          showMessage("Multiple tickets found. Select one.", "info");
+          return;
+        }
+
+        showMessage(payload.message || "Ticket not found. Please verify ID or try keyword search.", "error");
       } catch (error) {
-        clearTicket();
-        showMessage("Network error while fetching ticket. Please try again.", "error");
+        showMessage("Jira API failure. Please try again.", "error");
       } finally {
-        button.disabled = false;
-        button.textContent = "Fetch Ticket";
+        buttonEl.disabled = false;
+        buttonEl.textContent = "Search";
       }
     }
 
-    button.addEventListener("click", fetchTicket);
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        fetchTicket();
-      }
+    buttonEl.addEventListener("click", runLookup);
+    inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") runLookup();
     });
-
-    showMessage("Enter a ticket ID to begin.", "info");
   </script>
 </body>
 </html>
@@ -489,19 +560,21 @@ async def root() -> HTMLResponse:
 
 
 async def _fetch_issue(issue_key: str) -> JiraIssueResponse:
+    normalized = jira_service.normalize_ticket_id(issue_key)
     try:
-        return await jira_service.get_issue(issue_key)
+        return await jira_service.get_issue(normalized)
     except JiraNotFoundError as exc:
-        logger.warning("Issue not found", extra={"issue_key": issue_key})
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        logger.warning("Issue not found", extra={"issue_key": normalized})
+        detail = str(exc) if str(exc) else NOT_FOUND_TEXT
+        raise HTTPException(status_code=404, detail=detail) from exc
     except JiraUnauthorizedError as exc:
         logger.warning(
             "Unauthorized Jira access",
-            extra={"issue_key": issue_key, "status_code": exc.status_code},
+            extra={"issue_key": normalized, "status_code": exc.status_code},
         )
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except JiraTimeoutError as exc:
-        logger.warning("Jira upstream timeout", extra={"issue_key": issue_key})
+        logger.warning("Jira upstream timeout", extra={"issue_key": normalized})
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except JiraNetworkError as exc:
         logger.exception("Network error while fetching Jira issue")
@@ -509,6 +582,75 @@ async def _fetch_issue(issue_key: str) -> JiraIssueResponse:
     except JiraError as exc:
         logger.exception("Jira service error")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get(
+    "/jira/lookup",
+    response_model=JiraLookupResponse,
+    operation_id="jira_lookup",
+    tags=["jira"],
+)
+async def jira_lookup(
+    input_value: Annotated[str, Query(alias="input", min_length=1, max_length=300)]
+) -> JiraLookupResponse:
+    normalized = jira_service.normalize_ticket_id(input_value)
+    is_ticket = jira_service.is_ticket_id(input_value)
+
+    if is_ticket:
+        issue = await _fetch_issue(normalized)
+        return JiraLookupResponse(
+            mode="single",
+            query=input_value,
+            normalized_input=normalized,
+            is_ticket_id=True,
+            data=issue,
+            matches=[],
+            message=None,
+        )
+
+    try:
+        matches = await jira_service.search_issues(input_value)
+    except JiraUnauthorizedError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except JiraTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except JiraNetworkError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except JiraError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if not matches:
+        return JiraLookupResponse(
+            mode="none",
+            query=input_value,
+            normalized_input=input_value.strip(),
+            is_ticket_id=False,
+            data=None,
+            matches=[],
+            message=NOT_FOUND_TEXT,
+        )
+
+    if len(matches) == 1:
+        issue = await _fetch_issue(matches[0].ticket_id)
+        return JiraLookupResponse(
+            mode="single",
+            query=input_value,
+            normalized_input=input_value.strip(),
+            is_ticket_id=False,
+            data=issue,
+            matches=[],
+            message=None,
+        )
+
+    return JiraLookupResponse(
+        mode="multiple",
+        query=input_value,
+        normalized_input=input_value.strip(),
+        is_ticket_id=False,
+        data=None,
+        matches=matches,
+        message="Multiple tickets found. Select one ticket.",
+    )
 
 
 @app.get(
@@ -521,7 +663,7 @@ async def get_jira_issue(
     issue_key: Annotated[
         str,
         Path(
-            pattern=ISSUE_KEY_PATTERN,
+            pattern=TICKET_ID_PATTERN,
             description="Jira issue key in format PROJECT-123",
         ),
     ]
@@ -537,7 +679,7 @@ async def get_jira_issue(
 async def proxy_jira_attachment(
     issue_key: Annotated[
         str,
-        Path(pattern=ISSUE_KEY_PATTERN, description="Jira issue key in format PROJECT-123"),
+        Path(pattern=TICKET_ID_PATTERN, description="Jira issue key in format PROJECT-123"),
     ],
     attachment_id: Annotated[
         str,
@@ -577,7 +719,7 @@ async def jira_tool_get_issue(payload: JiraToolRequest) -> JiraToolResponse:
         return JiraToolResponse(
             ok=False,
             data=None,
-            error=ToolError(code="NOT_FOUND", message="Invalid issue key"),
+            error=ToolError(code="NOT_FOUND", message=NOT_FOUND_TEXT),
         )
     except JiraUnauthorizedError as exc:
         return JiraToolResponse(

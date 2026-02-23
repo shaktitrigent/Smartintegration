@@ -1,4 +1,4 @@
-﻿from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch
 
 from config import Settings
 from jira_service import JiraService
@@ -33,6 +33,7 @@ def test_retry_on_transient_5xx_then_success():
             "priority": {"name": "High"},
         },
         "renderedFields": {},
+        "names": {},
     }
 
     responses = [
@@ -73,7 +74,40 @@ def test_issue_response_contains_proxy_attachment_url():
             ],
         },
         "renderedFields": {},
+        "names": {},
     }
 
     issue = service._to_issue_response(raw)
     assert issue.attachments[0].download_url == "/jira/ABC-123/attachments/10001"
+    assert issue.attachments[0].content == "https://example/content/10001"
+    assert issue.attachments[0].name == "spec.pdf"
+
+
+def test_acceptance_criteria_from_custom_field_name_mapping():
+    settings = Settings(
+        jira_base_url="https://example.atlassian.net",
+        jira_email="user@example.com",
+        jira_api_token="token",
+        enable_response_cache=False,
+    )
+    service = JiraService(settings)
+
+    raw = {
+        "key": "ABC-123",
+        "fields": {
+            "summary": "Issue",
+            "customfield_10010": {
+                "type": "doc",
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "AC one"}]}],
+            },
+        },
+        "renderedFields": {
+            "customfield_10010": "<p><strong>AC one</strong></p>",
+        },
+        "names": {
+            "customfield_10010": "Acceptance Criteria",
+        },
+    }
+
+    issue = service._to_issue_response(raw)
+    assert issue.acceptance_criteria == "<p><strong>AC one</strong></p>"

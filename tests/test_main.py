@@ -1,4 +1,4 @@
-﻿import os
+import os
 
 os.environ.setdefault("JIRA_BASE_URL", "https://example.atlassian.net")
 os.environ.setdefault("JIRA_EMAIL", "user@example.com")
@@ -23,21 +23,39 @@ def test_invalid_issue_key_format_returns_422():
     assert response.status_code == 422
 
 
+def test_lookup_returns_not_found_message_when_no_matches():
+    async def fake_search_issues(_query: str, max_results: int = 10):
+        return []
+
+    original = main.jira_service.search_issues
+    main.jira_service.search_issues = fake_search_issues
+    try:
+        response = client.get("/jira/lookup", params={"input": "this query has no results"})
+    finally:
+        main.jira_service.search_issues = original
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "none"
+    assert payload["message"] == "Ticket not found. Please verify ID or try keyword search."
+
+
 def test_tool_endpoint_success():
-    async def fake_get_issue(issue_key: str):
+    async def fake_get_issue(_issue_key: str):
         return {
-            "issue_key": issue_key,
+            "ticket_id": "ABC-123",
             "summary": "Summary",
             "description": None,
+            "acceptance_criteria": None,
             "status": None,
-            "issue_type": None,
             "priority": None,
+            "issue_type": None,
             "assignee": None,
             "reporter": None,
             "created": None,
             "updated": None,
-            "comments": [],
             "attachments": [],
+            "metadata": {},
         }
 
     original = main.jira_service.get_issue
@@ -50,4 +68,4 @@ def test_tool_endpoint_success():
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["data"]["issue_key"] == "ABC-123"
+    assert payload["data"]["ticket_id"] == "ABC-123"

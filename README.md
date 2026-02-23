@@ -1,46 +1,38 @@
-﻿# Jira Integration Service (FastAPI)
+# Jira Integration Service (FastAPI)
 
-A production-ready Jira integration backend built with Python and FastAPI.
+Production-ready Jira integration backend with ticket-id or keyword lookup, structured JSON output, and attachment support for any file type.
 
 ## Features
 
-- Jira REST API v3 integration (`/rest/api/3/issue/{issueIdOrKey}` with `expand=renderedFields,changelog`)
-- Structured issue response (no raw Jira payload returned)
-- Retry with exponential backoff for transient Jira 5xx errors
-- Request timeout handling (connect + read)
-- Secure attachment proxy streaming endpoint
-- Optional in-memory response caching (2 to 5 minutes)
-- JSON structured logging
-- Issue key input validation (e.g., `ABC-123`)
-- Web UI at `/` for entering a ticket ID and viewing formatted ticket details
-- Health check endpoint
-- LLM/tool-friendly endpoint
-- Basic unit tests with mocked Jira calls
-
-## Project Structure
-
-- `main.py`
-- `jira_service.py`
-- `config.py`
-- `schemas.py`
-- `requirements.txt`
-- `tests/test_main.py`
-- `tests/test_jira_service.py`
-
-## Requirements
-
-- Python 3.11+
+- Jira credentials from environment variables only:
+  - `JIRA_BASE_URL`
+  - `JIRA_EMAIL`
+  - `JIRA_API_TOKEN`
+- Basic Auth with email + API token
+- Input routing:
+  - `^[A-Z]+-[0-9]+$` => ticket id lookup
+  - anything else => JQL search (`summary ~ "<input>" OR description ~ "<input>"`)
+- Multi-result search response for user selection
+- Full issue fetch with `expand=names,renderedFields`
+- Acceptance criteria extraction from custom field or description parsing fallback
+- Attachment metadata for all file types (no type restrictions)
+- Structured logging, retries, timeout handling, graceful API errors
+- UI sections:
+  - Search Input
+  - Basic Info
+  - Description
+  - Acceptance Criteria
+  - Attachments
 
 ## Environment Variables
 
-Create a `.env` file in the project root:
+Create `.env`:
 
 ```env
 JIRA_BASE_URL=https://your-domain.atlassian.net
 JIRA_EMAIL=your-email@example.com
 JIRA_API_TOKEN=your_jira_api_token
 
-# Optional tuning
 REQUEST_CONNECT_TIMEOUT_SECONDS=5
 REQUEST_READ_TIMEOUT_SECONDS=20
 RETRY_MAX_ATTEMPTS=3
@@ -62,63 +54,58 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Open:
-
 - UI: `http://127.0.0.1:8000/`
-- Docs: `http://127.0.0.1:8000/docs`
+- API Docs: `http://127.0.0.1:8000/docs`
 
-## Ports
+## Main Endpoints
 
-- Backend (FastAPI API): `8000`
-- Frontend (UI at `/`): `8000` (served by the same FastAPI app)
-
-## API Endpoints
-
-- `GET /`
-  - HTML UI for fetching ticket details
+- `GET /jira/lookup?input=<value>`
+  - Accepts ticket id or search text.
+  - Returns:
+    - `mode=single` + `data` for one resolved issue
+    - `mode=multiple` + `matches` for selection
+    - `mode=none` + not-found message
 - `GET /jira/{issue_key}`
-  - Returns structured Jira issue data
+  - Direct issue fetch by ticket id
 - `GET /jira/{issue_key}/attachments/{attachment_id}`
-  - Streams attachment content via backend proxy
+  - Streams attachment through backend
 - `POST /tools/jira.get_issue`
-  - LLM/function-call style endpoint
+  - Tool-friendly endpoint by issue key
 - `GET /health`
-  - Service health status
+  - Health status
 
-## Example Response (`GET /jira/{issue_key}`)
+## Issue JSON Shape
 
 ```json
 {
-  "issue_key": "SCRUM-1",
-  "summary": "Improve login flow",
-  "description": "<p>Rendered description...</p>",
+  "ticket_id": "ABC-123",
+  "summary": "Example summary",
+  "description": "<p>Rendered description</p>",
+  "acceptance_criteria": "<p>Rendered acceptance criteria</p>",
   "status": "In Progress",
-  "issue_type": "Task",
   "priority": "High",
-  "assignee": "John Doe",
-  "reporter": "Jane Doe",
+  "issue_type": "Task",
+  "assignee": "Jane User",
+  "reporter": "John User",
   "created": "2026-02-19T10:00:00.000+0000",
   "updated": "2026-02-19T11:00:00.000+0000",
-  "comments": [],
   "attachments": [
     {
-      "filename": "spec.pdf",
+      "name": "spec.pdf",
+      "type": "application/pdf",
       "size": 12345,
-      "mimeType": "application/pdf",
-      "download_url": "/jira/SCRUM-1/attachments/10001"
+      "download_url": "https://your-domain.atlassian.net/secure/attachment/10001/spec.pdf"
     }
-  ]
+  ],
+  "metadata": {
+    "names": {},
+    "has_rendered_fields": true
+  }
 }
 ```
 
-## Run Tests
+## Tests
 
 ```bash
 python -m pytest -q
 ```
-
-## Notes
-
-- Do not expose Jira API credentials to clients.
-- Attachment downloads should use the proxy endpoint.
-- Cache is in-memory only and resets on service restart.
